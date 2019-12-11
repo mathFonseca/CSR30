@@ -1,4 +1,5 @@
 #include <stdio.h>
+#include <string.h>
 
 /* ******************************************************************
  ALTERNATING BIT AND GO-BACK-N NETWORK EMULATOR: VERSION 1.1  J.F.Kurose
@@ -16,6 +17,7 @@
 
 #define BIDIRECTIONAL 0    /* change to 1 if you're doing extra credit */
                            /* and write a routine called B_output */
+#define TIMEOUT 25.0
 
 /* a "msg" is the data unit passed from layer 5 (teachers code) to layer  */
 /* 4 (students' code).  It contains the data (characters) to be delivered */
@@ -36,19 +38,60 @@ struct pkt {
 
 /********* STUDENTS WRITE THE NEXT SEVEN ROUTINES *********/
 
+/* Funções Adicionais */
+int ACK_A;
+int global_seqnum_A;
+int global_seqnum_B;
+struct pkt global_packet;
+
+
+int packetSum(packet)
+  struct pkt packet;
+{
+    int soma = 0;
+    soma += packet.seqnum + packet.acknum;
+
+    for(int i = 0; i<20; i++)
+    {
+        soma += packet.payload[i];
+    }
+
+    return soma;
+}
+
 /* called from layer 5, passed the data to be sent to other side */
 A_output(message)
   struct msg message;
 {
-    // Transform the message in packets to send.
-    /*
-        [...]
-    */
-    /*
-        Send the packet created to the layer below
+    if(!ACK_A)
+    {
+      /* Cria o pacote com a mensagem recebida */
+      global_packet.seqnum = global_seqnum_A;
+      global_packet.acknum = global_seqnum_A;
+      
+      memcpy(global_packet.payload, message.data, sizeof(message.data));
+      
+      global_packet.checksum = 0;
+      global_packet.checksum = packetSum(global_packet);
+      
+      printf("A side: Packet sent: seqnum = %d, acknum = %d, checksum = %X.\nPacket data: %s\n",
+      global_packet.seqnum, global_packet.acknum, global_packet.checksum, global_packet.payload);
     
-    tolayer3(0,pkt);    
-    */
+      // Bloqueia o envio de novos pacotes
+      ACK_A = 1;
+
+      // Envia para a próxima camada
+      tolayer3(0,global_packet);
+
+      // Inicia o timer do pacote
+      starttimer(0,TIMEOUT);
+    }
+    else
+    {
+      // Ainda não recebemos ACKs de volta, então não podemos enviar mais mensagens. Nossa janela em bit alternante é de 1.
+      printf("A side: Can't send more packets now. Discarting... %s\n", message.data);
+      return;
+    }
 }
 
 B_output(message)  /* need be completed only for extra credit */
@@ -69,41 +112,57 @@ B_output(message)  /* need be completed only for extra credit */
 A_input(packet)
   struct pkt packet;
 {
-    /*
-        Recebeu pacote do meio.
-    */
+    if(packet.acknum == -1)
+    {
+      printf("A side: Corrupted Packet. Discarting...\n");
+      return;
+    }
+    else
+    {
+      printf("A side: Packet Acknowledge\n");
+      // Desliga o timer do pacote
+      stoptimer(0);
 
-    /*
-
-    [...]
-
-    */
-    /*
-        Envio mensagem pra camada superior
-        tolayer5(0, msg);
-    */
+      // Arruma o seqnum para o próximo pacote.
+      if(global_seqnum_A == 1)
+      {
+        global_seqnum_A = 0;
+      } 
+      else
+      {
+        global_seqnum_A = 1;
+      }
+      // Atualiza o flag permitindo novos pacotes serem enviados
+      ACK_A = 0;      
+    }
+    
 }
 
 /* called when A's timer goes off */
 A_timerinterrupt()
 {
-    /*
-        Para o timer de A
-    */
-    stoptimer(0);
-    // Check if there's a missing Ack for a sending packet to retransmit
+    if(!ACK_A)
+    {
+      printf("A side: Didn't send any packet. Please disconsider this warning.\n");
+      return;
+    }
+    else
+    {
+      printf("A side: Packet TIMEOUT. Retransmitting...\n");
+      printf("A side: Packet sent: seqnum = %d, acknum = %d, checksum = %X.\nPacket data: %s\n",
+      global_packet.seqnum, global_packet.acknum, global_packet.checksum, global_packet.payload);
+      tolayer3(0, global_packet);
+      starttimer(0, TIMEOUT);
+    }
+    
 }  
 
 /* the following routine will be called once (only) before any other */
 /* entity A routines are called. You can use it to do any initialization */
 A_init()
 {
-    /* 
-        Necessário iniciar o timer A
-        0 para A
-        5 para o float value
-    */
-    starttimer(0,5);
+  global_seqnum_A = 0;
+  ACK_A = 0;
 }
 
 
@@ -113,41 +172,69 @@ A_init()
 B_input(packet)
   struct pkt packet;
 {
-    /*
-        Recebeu pacote do meio.
-    */ 
-    /*
+   if(packet.checksum != packetSum(packet))
+   {
+     printf("B side: Incorrect checksum. Sending NACK.\n");
+     struct pkt NACK;
+     NACK.acknum = -1;
+     tolayer3(1, NACK);
+     return;     
+   }
+   if(packet.seqnum != global_seqnum_B)
+   {
+     printf("B side: Not the expected packet. Sending NACK.\n");
+     struct pkt NACK;
+     NACK.acknum = -1;
+     tolayer3(1, NACK);
+     return;     
+   }
+   else
+   {
+      // Se o pacote recebido está correto, destrinchamos o pacote.
+      // Arruma o seqnum para o próximo pacote.
+      if(global_seqnum_B == 1)
+      {
+        global_seqnum_B = 0;
+      } 
+      else
+      {
+        global_seqnum_B = 1;
+      }
 
-    [...]
+      // Enviamos Ack pro outro lado.
+      struct pkt ACK;
+      ACK.acknum = packet.seqnum;
+      tolayer3(1, ACK);
+      
+      printf("B side: Sending ACK: seqnum = %d, acknum = %d, checksum = %X.\n",
+      packet.seqnum, packet.acknum, packet.checksum);
 
-    */
-    /*
-        Envio mensagem pra camada superior
-        tolayer5(1, msg);
-    */      
+      printf("Packet data: ");
+      for(int i = 0; i < 20; i++)
+      {
+        printf("%c", packet.payload[i]);
+      }
+      printf("\n");
+
+      struct msg message;
+      memcpy(message.data, packet.payload, sizeof(packet.payload));
+
+      // Enviamos o payload pra cima
+      tolayer5(1, message);
+   }
+   
 }
 
 /* called when B's timer goes off */
 B_timerinterrupt()
 {
-    /*
-        Para o timer de B
-    */
-    stoptimer(1);
-    // Check if there's a missing Ack for a sending packet to retransmit    
 }
 
 /* the following rouytine will be called once (only) before any other */
 /* entity B routines are called. You can use it to do any initialization */
 B_init()
 {
-    /* 
-        Necessário iniciar o timer B 
-        1 para B
-        5 para o float value
-    */
-    starttimer(1,5);
-
+  global_seqnum_B = 0;
 }
 
 
@@ -310,7 +397,7 @@ init()                         /* initialize the simulator */
     printf("It is likely that random number generation on your machine\n" ); 
     printf("is different from what this emulator expects.  Please take\n");
     printf("a look at the routine jimsrand() in the emulator code. Sorry. \n");
-    exit();
+    exit(0);
     }
 
    ntolayer3 = 0;
@@ -342,7 +429,7 @@ generate_next_arrival()
 {
    double x,log(),ceil();
    struct event *evptr;
-    char *malloc();
+   char *malloc();
    float ttime;
    int tempint;
 
